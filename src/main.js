@@ -48,6 +48,9 @@ class MiniGraphCard extends LitElement {
     this.stateChanged = false;
     this.initial = true;
     this._md5Config = undefined;
+    this._templateUpdateInterval = null;
+    this._originalConfig = null;
+    this._lastTemplateCheck = {};
   }
 
   static get styles() {
@@ -100,8 +103,9 @@ class MiniGraphCard extends LitElement {
     };
   }
 
-  setConfig(config) {
-    this.config = buildConfig(config, this.config);
+  async setConfig(config) {
+    this._originalConfig = JSON.parse(JSON.stringify(config));
+    this.config = await buildConfig(config, this._hass);
     this._md5Config = SparkMD5.hash(JSON.stringify(this.config));
     const entitiesChanged = !compareArray(this.config.entities || [], config.entities);
 
@@ -138,13 +142,74 @@ class MiniGraphCard extends LitElement {
         this.config.update_interval * 1000,
       );
     }
+
+    // Start template updates
+    this._startTemplateUpdates();
   }
 
   disconnectedCallback() {
     if (this.interval) {
       clearInterval(this.interval);
     }
+    this._stopTemplateUpdates();
     super.disconnectedCallback();
+  }
+
+  _hasTemplatesChanged() {
+    const configStr = JSON.stringify(this._originalConfig);
+    const currentHash = SparkMD5.hash(configStr);
+
+    if (this._lastTemplateCheck.hash === currentHash) {
+      return false;
+    }
+
+    this._lastTemplateCheck.hash = currentHash;
+    return true;
+  }
+
+  async _updateTemplates() {
+    if (!this._originalConfig || !this._hass) {
+      return;
+    }
+
+    if (!this._hasTemplatesChanged()) {
+      return;
+    }
+
+    try {
+      const newConfig = await buildConfig(this._originalConfig, this._hass);
+      const newMd5 = SparkMD5.hash(JSON.stringify(newConfig));
+
+      // Only update if config actually changed
+      if (newMd5 !== this._md5Config) {
+        this.config = newConfig;
+        this._md5Config = newMd5;
+
+        // Trigger re-render
+        this.requestUpdate();
+      }
+    } catch (error) {
+      log(`Template update failed: ${error.message}`);
+    }
+  }
+
+  _startTemplateUpdates() {
+    if (this._templateUpdateInterval) {
+      clearInterval(this._templateUpdateInterval);
+    }
+
+    // Re-evaluate templates every 60 seconds
+    this._templateUpdateInterval = setInterval(
+      () => this._updateTemplates(),
+      60000,
+    );
+  }
+
+  _stopTemplateUpdates() {
+    if (this._templateUpdateInterval) {
+      clearInterval(this._templateUpdateInterval);
+      this._templateUpdateInterval = null;
+    }
   }
 
   shouldUpdate(changedProps) {
