@@ -27,8 +27,57 @@ const log = (message) => {
   console.warn('mini-graph-card: ', message);
 };
 
+const isTemplate = (value) => {
+  if (typeof value !== 'string') return false;
+  return value.includes('{{') || value.includes('{%');
+};
+
+const templateRegex = /\{\{.*?\}\}|\{%.*?%\}/s;
+const hasTemplate = value => (typeof value === 'string' && templateRegex.test(value));
+
+const evaluateTemplate = async (template, hass) => {
+  if (!hass || !hass.callService) {
+    throw new Error('Home Assistant instance not available for template evaluation');
+  }
+
+  try {
+    const result = await hass.callService('template', 'render', {
+      template,
+    });
+    return result.response;
+  } catch (error) {
+    log(`Template evaluation failed: ${error.message}`);
+    return null;
+  }
+};
+
+const processTemplateValue = async (value, hass, fallback = null) => {
+  if (!isTemplate(value)) {
+    return value;
+  }
+
+  try {
+    const evaluated = await evaluateTemplate(value, hass);
+    if (evaluated === null) {
+      return fallback;
+    }
+
+    // Try to convert to number if it looks numeric
+    const numValue = parseFloat(evaluated);
+    if (!Number.isNaN(numValue) && Number.isFinite(numValue)) {
+      return numValue;
+    }
+
+    return evaluated;
+  } catch (error) {
+    log(`Template processing failed: ${error.message}`);
+    return fallback;
+  }
+};
+
 export {
   getMin, getAvg, getMax, getTime, getMilli, compress, decompress, log,
   getFirstDefinedItem,
   compareArray,
+  isTemplate, hasTemplate, evaluateTemplate, processTemplateValue,
 };
