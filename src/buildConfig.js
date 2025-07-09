@@ -1,4 +1,7 @@
-import { log } from './utils';
+import {
+  log,
+  processTemplateValue,
+} from './utils';
 import {
   URL_DOCS,
   FONT_SIZE,
@@ -101,13 +104,82 @@ const computeThresholds = (stops, type) => {
   }
 };
 
-export default (config) => {
+const processConfigTemplates = async (config, hass) => {
+  if (!hass) {
+    return config;
+  }
+
+  // Critical numeric fields that need template processing
+  const numericFields = [
+    'points_per_hour', 'hours_to_show', 'height', 'font_size',
+    'font_size_header', 'line_width', 'bar_spacing', 'decimals',
+    'value_factor', 'lower_bound', 'upper_bound', 'min_bound_range',
+    'lower_bound_secondary', 'upper_bound_secondary', 'min_bound_range_secondary',
+  ];
+
+  // Process numeric fields
+  const processedConfig = { ...config };
+  await Promise.all(numericFields.map(async (field) => {
+    if (processedConfig[field] !== undefined) {
+      processedConfig[field] = await processTemplateValue(
+        processedConfig[field],
+        hass,
+        processedConfig[field],
+      );
+    }
+  }));
+
+  // Process string fields that might be templates
+  const stringFields = ['name', 'icon', 'unit'];
+  await Promise.all(stringFields.map(async (field) => {
+    if (processedConfig[field] !== undefined) {
+      processedConfig[field] = await processTemplateValue(
+        processedConfig[field],
+        hass,
+        processedConfig[field],
+      );
+    }
+  }));
+
+  // Process entities configuration
+  if (processedConfig.entities && Array.isArray(processedConfig.entities)) {
+    await Promise.all(processedConfig.entities.map(async (entity, i) => {
+      if (typeof entity === 'object') {
+        await Promise.all(numericFields.map(async (field) => {
+          if (entity[field] !== undefined) {
+            processedConfig.entities[i][field] = await processTemplateValue(
+              entity[field],
+              hass,
+              entity[field],
+            );
+          }
+        }));
+        await Promise.all(stringFields.map(async (field) => {
+          if (entity[field] !== undefined) {
+            processedConfig.entities[i][field] = await processTemplateValue(
+              entity[field],
+              hass,
+              entity[field],
+            );
+          }
+        }));
+      }
+    }));
+  }
+
+  return processedConfig;
+};
+
+export default async (config, hass = null) => {
   if (!Array.isArray(config.entities))
     throw new Error(`Please provide the "entities" option as a list.\n See ${URL_DOCS}`);
   if (config.line_color_above || config.line_color_below)
     throw new Error(
       `"line_color_above/line_color_below" was removed, please use "color_thresholds".\n See ${URL_DOCS}`,
     );
+
+  // Process templates first
+  const processedConfig = await processConfigTemplates(config, hass);
 
   const conf = {
     animate: false,
@@ -132,8 +204,8 @@ export default (config) => {
     tap_action: {
       action: 'more-info',
     },
-    ...JSON.parse(JSON.stringify(config)),
-    show: { ...DEFAULT_SHOW, ...config.show },
+    ...JSON.parse(JSON.stringify(processedConfig)),
+    show: { ...DEFAULT_SHOW, ...processedConfig.show },
   };
 
   conf.entities.forEach((entity, i) => {
@@ -147,10 +219,10 @@ export default (config) => {
     conf.state_map[i].label = conf.state_map[i].label || conf.state_map[i].value;
   });
 
-  if (typeof config.line_color === 'string')
-    conf.line_color = [config.line_color, ...DEFAULT_COLORS];
+  if (typeof processedConfig.line_color === 'string')
+    conf.line_color = [processedConfig.line_color, ...DEFAULT_COLORS];
 
-  conf.font_size = (config.font_size / 100) * FONT_SIZE || FONT_SIZE;
+  conf.font_size = (processedConfig.font_size / 100) * FONT_SIZE || FONT_SIZE;
   conf.color_thresholds = computeThresholds(
     conf.color_thresholds,
     conf.color_thresholds_transition,
