@@ -125,6 +125,7 @@ const processConfigTemplates = async (config, hass) => {
         processedConfig[field],
         hass,
         processedConfig[field],
+        field,
       );
     }
   }));
@@ -137,6 +138,7 @@ const processConfigTemplates = async (config, hass) => {
         processedConfig[field],
         hass,
         processedConfig[field],
+        field,
       );
     }
   }));
@@ -151,6 +153,7 @@ const processConfigTemplates = async (config, hass) => {
               entity[field],
               hass,
               entity[field],
+              field,
             );
           }
         }));
@@ -160,6 +163,7 @@ const processConfigTemplates = async (config, hass) => {
               entity[field],
               hass,
               entity[field],
+              field,
             );
           }
         }));
@@ -170,6 +174,9 @@ const processConfigTemplates = async (config, hass) => {
   return processedConfig;
 };
 
+// Export utility functions to avoid duplication in main.js
+export { findFirstValuedIndex, interpolateStops, computeThresholds };
+
 export default async (config, hass = null) => {
   if (!Array.isArray(config.entities))
     throw new Error(`Please provide the "entities" option as a list.\n See ${URL_DOCS}`);
@@ -178,8 +185,8 @@ export default async (config, hass = null) => {
       `"line_color_above/line_color_below" was removed, please use "color_thresholds".\n See ${URL_DOCS}`,
     );
 
-  // Process templates first
-  const processedConfig = await processConfigTemplates(config, hass);
+  // Process templates first (only if hass is available)
+  const processedConfig = hass ? await processConfigTemplates(config, hass) : config;
 
   const conf = {
     animate: false,

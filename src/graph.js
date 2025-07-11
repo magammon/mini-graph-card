@@ -3,6 +3,7 @@ import {
   X, Y, V,
   ONE_HOUR,
 } from './const';
+import { validateNumericField } from './utils';
 
 export default class Graph {
   constructor(width, height, margin, hours = 24, points = 1, aggregateFuncName = 'avg', groupBy = 'interval', smoothing = true, logarithmic = false) {
@@ -25,8 +26,15 @@ export default class Graph {
     this.margin = margin;
     this._max = 0;
     this._min = 0;
-    this.points = points;
-    this.hours = hours;
+
+    // Validate and sanitize input parameters
+    this.points = validateNumericField(points, 'points_per_hour', 1);
+    this.hours = validateNumericField(hours, 'hours_to_show', 24);
+
+    // eslint-disable-next-line no-console
+    console.log('DEBUG: Graph constructor - hours:', this.hours, 'points:', this.points,
+      'input hours:', hours, 'input points:', points);
+
     this.aggregateFuncName = aggregateFuncName;
     this._calcPoint = aggregateFuncMap[aggregateFuncName] || this._average;
     this._smoothing = smoothing;
@@ -55,8 +63,32 @@ export default class Graph {
     const histGroups = this._history.reduce((res, item) => this._reducer(res, item), []);
 
     // extend length to fill missing history
-    const requiredNumOfPoints = Math.ceil(this.hours * this.points);
-    histGroups.length = requiredNumOfPoints;
+    // Additional safety check on hours and points before calculation
+    const safeHours = Number.isFinite(this.hours) && this.hours > 0 ? this.hours : 24;
+    const safePoints = Number.isFinite(this.points) && this.points > 0 ? this.points : 1;
+
+    const requiredNumOfPoints = Math.ceil(safeHours * safePoints);
+
+    // eslint-disable-next-line no-console
+    console.log('DEBUG: Graph.update - hours:', this.hours, 'points:', this.points,
+      'safeHours:', safeHours, 'safePoints:', safePoints, 'calculated:', requiredNumOfPoints);
+
+    // Validate the calculated number of points to prevent array length errors
+    if (!Number.isFinite(requiredNumOfPoints) || requiredNumOfPoints < 1
+        || requiredNumOfPoints > 100000 || !Number.isInteger(requiredNumOfPoints)) {
+      // eslint-disable-next-line no-console
+      console.error('mini-graph-card: Invalid number of points calculated:',
+        requiredNumOfPoints, 'hours:', this.hours, 'points:', this.points);
+      // Use a safe default - 24 hours at 1 point per hour
+      const safeDefault = Math.max(1, Math.ceil(24 * 1));
+      // eslint-disable-next-line no-console
+      console.log('DEBUG: Using safe default:', safeDefault);
+      histGroups.length = safeDefault;
+    } else {
+      // eslint-disable-next-line no-console
+      console.log('DEBUG: Setting histGroups.length to:', requiredNumOfPoints);
+      histGroups.length = requiredNumOfPoints;
+    }
 
     this.coords = this._calcPoints(histGroups);
     this.min = Math.min(...this.coords.map(item => Number(item[V])));

@@ -6,15 +6,22 @@ import { interpolateRgb } from 'd3-interpolate';
 import Graph from './graph';
 import style from './style';
 import handleClick from './handleClick';
-import buildConfig from './buildConfig';
+import buildConfig, { computeThresholds } from './buildConfig';
 import './initialize';
 import { version } from '../package.json';
+
 
 import {
   ICONS,
   UPDATE_PROPS,
   X, Y, V,
   ONE_HOUR,
+  URL_DOCS,
+  FONT_SIZE,
+  FONT_SIZE_HEADER,
+  MAX_BARS,
+  DEFAULT_COLORS,
+  DEFAULT_SHOW,
 } from './const';
 import {
   getMin, getAvg, getMax,
@@ -61,6 +68,16 @@ class MiniGraphCard extends LitElement {
     this._hass = hass;
     let updated = false;
     const queue = [];
+
+    // Add null checks to prevent race conditions
+    if (!this.config || !this.config.entities || !Array.isArray(this.config.entities)) {
+      // Try to initialize templates if hass is now available
+      if (hass && this._originalConfig) {
+        this._initializeTemplates();
+      }
+      return;
+    }
+
     this.config.entities.forEach((entity, index) => {
       this.config.entities[index].index = index; // Required for filtered views
       const entityState = hass && hass.states[entity.entity] || undefined;
@@ -103,31 +120,161 @@ class MiniGraphCard extends LitElement {
     };
   }
 
-  async setConfig(config) {
+  _buildConfigSync(config) {
+    // Synchronous version of buildConfig without template processing
+    if (!Array.isArray(config.entities))
+      throw new Error(`Please provide the "entities" option as a list.\n See ${URL_DOCS}`);
+    if (config.line_color_above || config.line_color_below)
+      throw new Error(
+        `"line_color_above/line_color_below" was removed, please use "color_thresholds".\n See ${URL_DOCS}`,
+      );
+
+    const conf = {
+      animate: false,
+      hour24: false,
+      font_size: FONT_SIZE,
+      font_size_header: FONT_SIZE_HEADER,
+      height: 100,
+      hours_to_show: 24,
+      points_per_hour: 0.5,
+      aggregate_func: 'avg',
+      group_by: 'interval',
+      line_color: [...DEFAULT_COLORS],
+      color_thresholds: [],
+      color_thresholds_transition: 'smooth',
+      line_width: 5,
+      bar_spacing: 4,
+      compress: true,
+      smoothing: true,
+      state_map: [],
+      cache: true,
+      value_factor: 0,
+      tap_action: {
+        action: 'more-info',
+      },
+      ...JSON.parse(JSON.stringify(config)),
+      show: { ...DEFAULT_SHOW, ...config.show },
+    };
+
+    conf.entities.forEach((entity, i) => {
+      if (typeof entity === 'string') conf.entities[i] = { entity };
+    });
+
+    conf.state_map.forEach((state, i) => {
+      if (typeof state === 'string') conf.state_map[i] = { value: state, label: state };
+      conf.state_map[i].label = conf.state_map[i].label || conf.state_map[i].value;
+    });
+
+    if (typeof config.line_color === 'string')
+      conf.line_color = [config.line_color, ...DEFAULT_COLORS];
+
+    conf.font_size = (config.font_size / 100) * FONT_SIZE || FONT_SIZE;
+    conf.color_thresholds = computeThresholds(
+      conf.color_thresholds,
+      conf.color_thresholds_transition,
+    );
+    const additional = conf.hours_to_show > 24 ? { day: 'numeric', weekday: 'short' } : {};
+    const hourFormat = conf.hour24 ? { hourCycle: 'h23' } : { hour12: true };
+    conf.format = { ...hourFormat, ...additional };
+
+    switch (conf.group_by) {
+      case 'date':
+        conf.points_per_hour = 1 / 24;
+        break;
+      case 'hour':
+        conf.points_per_hour = 1;
+        break;
+      default:
+        break;
+    }
+
+    if (conf.show.graph === 'bar') {
+      const entities = conf.entities.length;
+      if (conf.hours_to_show * conf.points_per_hour * entities > MAX_BARS) {
+        conf.points_per_hour = MAX_BARS / (conf.hours_to_show * entities);
+        log(`Not enough space, adjusting points_per_hour to ${conf.points_per_hour}`);
+      }
+    }
+
+    return conf;
+  }
+
+  // Threshold computation methods removed - now using functions from buildConfig.js
+
+  setConfig(config) {
     this._originalConfig = JSON.parse(JSON.stringify(config));
-    this.config = await buildConfig(config, this._hass);
+    // Initialize config synchronously first (without templates)
+    this.config = this._buildConfigSync(config);
     this._md5Config = SparkMD5.hash(JSON.stringify(this.config));
     const entitiesChanged = !compareArray(this.config.entities || [], config.entities);
 
+    // Process templates asynchronously after initial setup
+    this._initializeTemplates();
+
     if (!this.Graph || entitiesChanged) {
       if (this._hass) this.hass = this._hass;
-      this.Graph = this.config.entities.map(
-        entity => new Graph(
-          500,
-          this.config.height,
-          [this.config.show.fill ? 0 : this.config.line_width, this.config.line_width],
-          this.config.hours_to_show,
-          this.config.points_per_hour,
-          entity.aggregate_func || this.config.aggregate_func,
-          this.config.group_by,
-          getFirstDefinedItem(
-            entity.smoothing,
-            this.config.smoothing,
-            !entity.entity.startsWith('binary_sensor.'), // turn off for binary sensor by default
+      try {
+        this.Graph = this.config.entities.map(
+          entity => new Graph(
+            500,
+            this.config.height,
+            [this.config.show.fill ? 0 : this.config.line_width, this.config.line_width],
+            this.config.hours_to_show,
+            this.config.points_per_hour,
+            entity.aggregate_func || this.config.aggregate_func,
+            this.config.group_by,
+            getFirstDefinedItem(
+              entity.smoothing,
+              this.config.smoothing,
+              !entity.entity.startsWith('binary_sensor.'), // turn off for binary sensor by default
+            ),
+            this.config.logarithmic,
           ),
-          this.config.logarithmic,
-        ),
-      );
+        );
+      } catch (error) {
+        log(`Graph instantiation failed: ${error.message}`);
+        // Provide fallback graphs with safe defaults
+        this.Graph = this.config.entities.map(
+          () => new Graph(
+            500,
+            100, // safe height
+            [5, 5], // safe margins
+            24, // safe hours
+            1, // safe points per hour
+            'avg', // safe aggregate function
+            'interval', // safe group by
+            true, // safe smoothing
+            false, // safe logarithmic
+          ),
+        );
+      }
+    }
+  }
+
+  async _initializeTemplates() {
+    if (!this._originalConfig || !this._hass) {
+      return;
+    }
+
+    try {
+      const newConfig = await buildConfig(this._originalConfig, this._hass);
+      if (!newConfig) {
+        log('Template initialization failed: buildConfig returned null');
+        return;
+      }
+
+      const newMd5 = SparkMD5.hash(JSON.stringify(newConfig));
+
+      // Only update if config actually changed
+      if (newMd5 !== this._md5Config) {
+        this.config = newConfig;
+        this._md5Config = newMd5;
+
+        // Trigger re-render
+        this.requestUpdate();
+      }
+    } catch (error) {
+      log(`Template initialization failed: ${error.message}`);
     }
   }
 
@@ -178,6 +325,11 @@ class MiniGraphCard extends LitElement {
 
     try {
       const newConfig = await buildConfig(this._originalConfig, this._hass);
+      if (!newConfig) {
+        log('Template update failed: buildConfig returned null');
+        return;
+      }
+
       const newMd5 = SparkMD5.hash(JSON.stringify(newConfig));
 
       // Only update if config actually changed
@@ -235,7 +387,12 @@ class MiniGraphCard extends LitElement {
         });
         this.length = [...this.length];
       } else {
-        this.length = Array(this.entity.length).fill('none');
+        const entityLength = this.entity && this.entity.length ? this.entity.length : 0;
+        if (entityLength > 0 && Number.isFinite(entityLength) && Number.isInteger(entityLength)) {
+          this.length = Array(entityLength).fill('none');
+        } else {
+          this.length = [];
+        }
       }
     }
   }
