@@ -3,8 +3,7 @@
 .DS_Store
 template_example.yaml
 CLAUDE.md
-192.168.1.142-1752148684473.log
-192.168.1.142-1752149308357.log
+*.log
 DIAGNOSIS-old.md
 diagnosis.md
 engineering_principles.md
