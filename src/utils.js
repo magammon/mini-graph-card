@@ -41,14 +41,24 @@ const evaluateTemplate = async (template, hass) => {
   }
 
   try {
+    // Try new API first (Home Assistant 2024.12+)
     const result = await hass.callWS({
-      type: 'render_template',
+      type: 'template/render',
       template,
     });
     return result;
   } catch (error) {
-    log(`Template evaluation failed: ${error.message}`);
-    return null;
+    // Fallback to old API for compatibility
+    try {
+      const result = await hass.callWS({
+        type: 'render_template',
+        template,
+      });
+      return result;
+    } catch (fallbackError) {
+      log(`Template evaluation failed: ${error.message}, fallback also failed: ${fallbackError.message}`);
+      return null;
+    }
   }
 };
 
